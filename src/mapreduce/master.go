@@ -30,37 +30,52 @@ func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
 	_ = "breakpoint"
 	var workerAddr string
+	var statusChan = make(chan bool)
 
 	for i := 0; i < mr.nMap; i++ {
-		var reply DoJobReply
-		workerAddr = <-mr.registerChannel
-		args := &DoJobArgs{
-			File:          mr.file,
-			Operation:     Map,
-			JobNumber:     i,
-			NumOtherPhase: mr.nReduce,
-		}
-		ok := call(workerAddr, "Worker.DoJob", args, &reply)
-		if ok == true {
-			mr.registerChannel <- workerAddr
-		}
+		go func() {
+			var reply DoJobReply
+			workerAddr = <-mr.registerChannel
+			args := &DoJobArgs{
+				File:          mr.file,
+				Operation:     Map,
+				JobNumber:     i,
+				NumOtherPhase: mr.nReduce,
+			}
+			ok := call(workerAddr, "Worker.DoJob", args, &reply)
+			if ok == true {
+				mr.registerChannel <- workerAddr
+				statusChan <- ok
+			}
+		}()
+	}
+
+	for i := 0; i < mr.nMap; i++ {
+		<-statusChan
 	}
 
 	fmt.Println("Map is done")
 
 	for i := 0; i < mr.nReduce; i++ {
-		var reply DoJobReply
-		workerAddr = <-mr.registerChannel
-		args := &DoJobArgs{
-			File:          mr.file,
-			Operation:     Reduce,
-			JobNumber:     i,
-			NumOtherPhase: mr.nMap,
-		}
-		ok := call(workerAddr, "Worker.DoJob", args, &reply)
-		if ok == true {
-			mr.registerChannel <- workerAddr
-		}
+		go func() {
+			var reply DoJobReply
+			workerAddr = <-mr.registerChannel
+			args := &DoJobArgs{
+				File:          mr.file,
+				Operation:     Reduce,
+				JobNumber:     i,
+				NumOtherPhase: mr.nMap,
+			}
+			ok := call(workerAddr, "Worker.DoJob", args, &reply)
+			if ok == true {
+				mr.registerChannel <- workerAddr
+				statusChan <- ok
+			}
+		}()
+	}
+
+	for i := 0; i < mr.nMap; i++ {
+		<-statusChan
 	}
 
 	fmt.Println("Reduce is done")
