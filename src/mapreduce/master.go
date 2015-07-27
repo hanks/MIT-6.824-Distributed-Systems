@@ -29,56 +29,79 @@ func (mr *MapReduce) KillWorkers() *list.List {
 func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
 	_ = "breakpoint"
-	var workerAddr string
-	var statusChan = make(chan bool)
+	var mapChan, reduceChan = make(chan int, mr.nMap), make(chan int, mr.nReduce)
+
+	var SendMap = func(worker string, jobNum int) bool {
+		args := &DoJobArgs{
+			NumOtherPhase: mr.nReduce,
+			File:          mr.file,
+			Operation:     Map,
+			JobNumber:     jobNum,
+		}
+
+		var reply DoJobReply
+		return call(worker, "Worker.DoJob", args, &reply)
+	}
+
+	var SendReduce = func(worker string, jobNum int) bool {
+		args := &DoJobArgs{
+			NumOtherPhase: mr.nMap,
+			File:          mr.file,
+			Operation:     Reduce,
+			JobNumber:     jobNum,
+		}
+
+		var reply DoJobReply
+		return call(worker, "Worker.DoJob", args, &reply)
+	}
 
 	for i := 0; i < mr.nMap; i++ {
-		go func() {
-			var reply DoJobReply
-			workerAddr = <-mr.registerChannel
-			args := &DoJobArgs{
-				File:          mr.file,
-				Operation:     Map,
-				JobNumber:     i,
-				NumOtherPhase: mr.nReduce,
+		go func(jobNum int) {
+			var worker string
+			var ok bool = false
+
+			select {
+			case worker = <-mr.idleChannel:
+				ok = SendMap(worker, jobNum)
+			case worker = <-mr.registerChannel:
+				ok = SendMap(worker, jobNum)
 			}
-			ok := call(workerAddr, "Worker.DoJob", args, &reply)
+
 			if ok == true {
-				mr.registerChannel <- workerAddr
-				statusChan <- ok
+				mapChan <- jobNum
+				mr.idleChannel <- worker
+				return
 			}
-		}()
+		}(i)
 	}
 
 	for i := 0; i < mr.nMap; i++ {
-		<-statusChan
+		<-mapChan
 	}
-
-	fmt.Println("Map is done")
 
 	for i := 0; i < mr.nReduce; i++ {
-		go func() {
-			var reply DoJobReply
-			workerAddr = <-mr.registerChannel
-			args := &DoJobArgs{
-				File:          mr.file,
-				Operation:     Reduce,
-				JobNumber:     i,
-				NumOtherPhase: mr.nMap,
+		go func(jobNum int) {
+			var worker string
+			var ok bool = false
+
+			select {
+			case worker = <-mr.idleChannel:
+				ok = SendReduce(worker, jobNum)
+			case worker = <-mr.registerChannel:
+				ok = SendReduce(worker, jobNum)
 			}
-			ok := call(workerAddr, "Worker.DoJob", args, &reply)
+
 			if ok == true {
-				mr.registerChannel <- workerAddr
-				statusChan <- ok
+				reduceChan <- jobNum
+				mr.idleChannel <- worker
+				return
 			}
-		}()
+		}(i)
 	}
 
-	for i := 0; i < mr.nMap; i++ {
-		<-statusChan
+	for i := 0; i < mr.nReduce; i++ {
+		<-reduceChan
 	}
-
-	fmt.Println("Reduce is done")
 
 	return mr.KillWorkers()
 }
