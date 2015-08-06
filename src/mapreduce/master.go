@@ -28,80 +28,65 @@ func (mr *MapReduce) KillWorkers() *list.List {
 
 func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
-	_ = "breakpoint"
-	var mapChan, reduceChan = make(chan int, mr.nMap), make(chan int, mr.nReduce)
+	waiting := make(chan string)
+	jobs := make(chan *DoJobArgs)
+	done := make(chan int)
 
-	var SendMap = func(worker string, jobNum int) bool {
-		args := &DoJobArgs{
-			NumOtherPhase: mr.nReduce,
-			File:          mr.file,
-			Operation:     Map,
-			JobNumber:     jobNum,
-		}
-
+	workerDoJob := func(addr string, args *DoJobArgs) {
 		var reply DoJobReply
-		return call(worker, "Worker.DoJob", args, &reply)
+		ok := call(addr, "Worker.DoJob", args, &reply)
+		if ok {
+			done <- args.JobNumber
+			waiting <- addr
+		} else {
+			jobs <- args
+		}
 	}
 
-	var SendReduce = func(worker string, jobNum int) bool {
-		args := &DoJobArgs{
-			NumOtherPhase: mr.nMap,
-			File:          mr.file,
-			Operation:     Reduce,
-			JobNumber:     jobNum,
-		}
+	getNextWorkerAddr := func() string {
+		var addr string
+		select {
+		case addr = <-mr.registerChannel:
+			mr.Workers[addr] = &WorkerInfo{addr}
+		case addr = <-waiting:
 
-		var reply DoJobReply
-		return call(worker, "Worker.DoJob", args, &reply)
+		}
+		return addr
 	}
+
+	// main
+	go func() {
+		for job := range jobs {
+			addr := getNextWorkerAddr()
+			go workerDoJob(addr, job)
+		}
+	}()
+
+	// do map
+	go func() {
+		for i := 0; i < mr.nMap; i++ {
+			args := &DoJobArgs{mr.file, Map, i, mr.nReduce}
+			jobs <- args
+		}
+	}()
 
 	for i := 0; i < mr.nMap; i++ {
-		go func(jobNum int) {
-			var worker string
-			var ok bool = false
-
-			select {
-			case worker = <-mr.idleChannel:
-				ok = SendMap(worker, jobNum)
-			case worker = <-mr.registerChannel:
-				ok = SendMap(worker, jobNum)
-			}
-
-			if ok == true {
-				mapChan <- jobNum
-				mr.idleChannel <- worker
-				return
-			}
-		}(i)
+		<-done
 	}
 
-	for i := 0; i < mr.nMap; i++ {
-		<-mapChan
-	}
+	// do reduce
+	go func() {
+		for i := 0; i < mr.nReduce; i++ {
+			args := &DoJobArgs{mr.file, Reduce, i, mr.nMap}
+			jobs <- args
+		}
+	}()
 
 	for i := 0; i < mr.nReduce; i++ {
-		go func(jobNum int) {
-			var worker string
-			var ok bool = false
-
-			select {
-			case worker = <-mr.idleChannel:
-				ok = SendReduce(worker, jobNum)
-			case worker = <-mr.registerChannel:
-				ok = SendReduce(worker, jobNum)
-			}
-
-			if ok == true {
-				reduceChan <- jobNum
-				mr.idleChannel <- worker
-				return
-			}
-		}(i)
+		<-done
 	}
 
-	for i := 0; i < mr.nReduce; i++ {
-		<-reduceChan
-	}
+	close(jobs)
 
 	return mr.KillWorkers()
 }
